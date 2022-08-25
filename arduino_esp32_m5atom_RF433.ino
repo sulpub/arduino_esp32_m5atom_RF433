@@ -16,6 +16,21 @@
     - pin26 (soudure fil sur la pin 17 du composant HX2262 (acces pin
       entrée module radio)
 
+  Format trame JSON:
+    code : sur 5 caractéres 0 ou F (exemple "00FF0") en fonction des 
+           dip switch sur les recepteurs
+    channel 0 : A
+    channel 1 : B
+    channel 2 : C
+    channel 3 : D
+    state 0 : OFF
+    state 1 : ON
+
+  Exemple de trame JSON a envoyé en MQTT avec le topic "action_telecommande_433" : 
+  bouton A ON  : {"code":"F0F00","channel":0,"state":1}
+  bouton A OFF : {"code":"F0F00","channel":0,"state":0}
+  bouton B ON  : {"code":"F0F00","channel":1,"state":1}
+  bouton B OFF : {"code":"F0F00","channel":1,"state":0}
 */
 
 
@@ -46,6 +61,7 @@
 
 RCSwitch mySwitch = RCSwitch();
 
+#include <Arduino_JSON.h>
 
 
 /*
@@ -145,14 +161,23 @@ String string_value               = "   ";
 int value                         = 0;
 int intTempCpu                    = -20;
 
-// buffer envoi message
+// buffer envoi et reception message
 char msg[150];
 char buf[10];
 char buffer_tmp[250];
+char buffer_cmd[250];
 
 int nb_test_ctl_wifi              = 0;
 int nb_test_ctl_mqtt              = 0;
 
+//variables pour la reception JSON MQTT
+String stringCode = "";
+String stringChannel = "";
+String stringState = "";
+int intChannel = 0;
+int intState = 0;
+int intDemandeCmdRf433 = 0;
+int intErrorCmdReceive = 0;
 
 /*
     _________       __                  __      __.______________.___
@@ -231,6 +256,94 @@ void callback_mqtt(char* topic, byte* payload, unsigned int length)
     string_value += (char)payload[i];
   }
   Serial.println();
+
+  //Decodage JSON
+  JSONVar myObject = JSON.parse(string_value);
+  if (JSON.typeof(myObject) == "undefined")
+  {
+    Serial.println("Echec du Parsing JSON!");
+  }
+  else
+  {
+    //json : {"code":,"channel":,"state":}
+    if (myObject.hasOwnProperty("code"))
+    {
+      Serial.print("myObject[\"code\"] = ");
+      Serial.println(myObject["code"]);
+      stringCode = myObject["code"];
+    }
+
+    if (myObject.hasOwnProperty("channel"))
+    {
+      Serial.print("myObject[\"channel\"] = ");
+      Serial.println((int) myObject["channel"]);
+      intChannel = (int) myObject["channel"];
+
+      //A:0FFF   B:F0FF  C:FF0F   D:FFF0
+      intErrorCmdReceive++;
+      if (intChannel == 0)
+      {
+        stringChannel = "0FFF";
+        intErrorCmdReceive--;
+      }
+      if (intChannel == 1)
+      {
+        stringChannel = "F0FF";
+        intErrorCmdReceive--;
+      }
+      if (intChannel == 2)
+      {
+        stringChannel = "FF0F";
+        intErrorCmdReceive--;
+      }
+      if (intChannel == 3)
+      {
+        stringChannel = "FFF0";
+        intErrorCmdReceive--;
+      }
+    }
+
+    if (myObject.hasOwnProperty("state"))
+    {
+      Serial.print("myObject[\"state\"] = ");
+      Serial.println((int) myObject["state"]);
+      intState = (int) myObject["state"];
+
+      //ON:F0F /OFF:FF0
+      intErrorCmdReceive++;
+      if (intState == 0)
+      {
+        stringState = "FF0";
+        intErrorCmdReceive--;
+
+      }
+      if (intState == 1)
+      {
+        stringState = "F0F";
+        intErrorCmdReceive--;
+
+      }
+    }
+
+    //formatage trame radio 433MHz
+    sprintf (buffer_cmd, "%s%s%s", stringCode, stringChannel, stringState);
+    Serial.println("Commande RADIO 433MHz:");
+    Serial.println(buffer_cmd);
+
+    if (intErrorCmdReceive == 0)
+    {
+      intDemandeCmdRf433 = 1;
+    }
+    else
+    {
+      intDemandeCmdRf433 = 0;
+      Serial.println("!!!!! Erreur commande recu non pris en compte");
+    }
+
+  }
+
+
+
 
   value = string_value.toInt();
 
@@ -608,59 +721,16 @@ void loop() {
   //A:0FFF   B:F0FF  C:FF0F   D:FFF0
   //3 bit ON:F0F /OFF:FF0
 
-  //  //active bouton A
-  //  Serial.println("POWER ON A");
-  //  mySwitch.sendTriState("00FF00FFFF0F");
-  //  delay(1000);
-  //  //Attente 10 secondes
-  //  for (int i = 0; i < 10; i++)
-  //  {
-  //    Serial.print(".");
-  //    delay(1000);
-  //  }
-  //  Serial.println();
-  //
-  //
-  //  //desactive bouton A
-  //  Serial.println("POWER OFF A");
-  //  mySwitch.sendTriState("00FF00FFFFF0");
-  //  delay(1000);
-  //  //Attente 10 secondes
-  //  for (int i = 0; i < 10; i++)
-  //  {
-  //    Serial.print(".");
-  //    delay(1000);
-  //  }
-  //  Serial.println();
-  //
-  //
-  //
-  //  //active bouton A
-  //  Serial.println("POWER ON B");
-  //  mySwitch.sendTriState("00FF0F0FFF0F");
-  //  delay(1000);
-  //  //Attente 10 secondes
-  //  for (int i = 0; i < 10; i++)
-  //  {
-  //    Serial.print(".");
-  //    delay(1000);
-  //  }
-  //  Serial.println();
-  //
-  //
-  //  //desactive bouton B
-  //  Serial.println("POWER OFF B");
-  //  mySwitch.sendTriState("00FF0F0FFFF0");
-  //  delay(1000);
-  //  //Attente 10 secondes
-  //  for (int i = 0; i < 10; i++)
-  //  {
-  //    Serial.print(".");
-  //    delay(1000);
-  //  }
-  //  Serial.println();
-  //
-  //  while (1);
+  //Envoi trame RF si bonne reception MQTT
+  if (intDemandeCmdRf433 == 1)
+  {
+    intDemandeCmdRf433 = 0;
+    //trame a envoyer "buffer_cmd"
+    mySwitch.sendTriState(buffer_cmd);
+    Serial.print("TRAME RF envoyé ----->");
+    Serial.println(buffer_cmd);
+    delay(1000);
+  }
 }
 
 
@@ -826,6 +896,5 @@ void send_status_mqtt(unsigned long ulong_interval)
 
 /*
    TO DO
-   - ajout message json reception en MQTT
-   - ajout action radio 433 en accord avec les message json
+   - documentation du code
 */
