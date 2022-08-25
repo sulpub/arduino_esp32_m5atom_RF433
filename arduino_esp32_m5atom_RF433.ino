@@ -82,7 +82,6 @@ const char* mqtt_server       = "ip serveur MQTT - a remplir";
 // value for MQTT broker.
 String clientIdMqtt           = "telecommande_433";
 String subscribe_str          = "action_telecommande_433";
-//const char* subscribe_char  = "ADTP_iot4";
 String clientLoginMqtt        = "login MQTT - a remplir";
 String clientPassMqtt         = "password MQTT - a remplir";
 
@@ -144,6 +143,7 @@ WiFiMulti wifiMulti;
 
 String string_value               = "   ";
 int value                         = 0;
+int intTempCpu                    = -20;
 
 // buffer envoi message
 char msg[150];
@@ -305,9 +305,9 @@ void reconnect() {
         setBuff(0x00, 0x00, 0x00);
         M5.dis.displaybuff(DisBuff);
 
-        //sprintf (msg, "{\"SSID\":%s,\"RSSI\":%d}", WiFi.SSID().c_str(), WiFi.RSSI());
         intcounter++;
-        sprintf (msg, "{\"ssid\":%s,\"rssi\":%d,\"counter\":%d}", WiFi.SSID().c_str(), WiFi.RSSI(), intcounter);
+        sprintf (msg, "{\"ssid\":%s,\"rssi\":%d,\"counter\":%d,\"tempcpu\":%d}", WiFi.SSID().c_str(), WiFi.RSSI(), intcounter, intTempCpu);
+
         Serial.print("Publish message: ");
         Serial.print(clientIdMqtt.c_str());
         Serial.print(" ");
@@ -315,9 +315,7 @@ void reconnect() {
         client.publish(clientIdMqtt.c_str(), msg);
 
         // init subscribe
-        //sprintf(buffer_tmp, "set/%s/#", subscribe_str.c_str());
         sprintf(buffer_tmp, "%s", subscribe_str.c_str());
-        //Serial.println(buffer_tmp);
         client.subscribe(buffer_tmp);
 
         //rechargement ecoute MQTT
@@ -346,9 +344,9 @@ void reconnect() {
       //delai reboot
       delay(random(200)); // Delay for a period of time (in milliseconds).
 
-      //sprintf (msg, "{\"SSID\":%s,\"RSSI\":%d}", WiFi.SSID().c_str(), WiFi.RSSI());
       intcounter++;
-      sprintf (msg, "{\"ssid\":%s,\"rssi\":%d,\"counter\":%d}", WiFi.SSID().c_str(), WiFi.RSSI(), intcounter);
+      sprintf (msg, "{\"ssid\":%s,\"rssi\":%d,\"counter\":%d,\"tempcpu\":%d}", WiFi.SSID().c_str(), WiFi.RSSI(), intcounter, intTempCpu);
+
       Serial.print("Publish message: ");
       Serial.print(clientIdMqtt.c_str());
       Serial.print(" ");
@@ -356,9 +354,7 @@ void reconnect() {
       client.publish(clientIdMqtt.c_str(), msg);
 
       // init subscribe
-      //sprintf(buffer_tmp, "set/%s/#", subscribe_str.c_str());
       sprintf(buffer_tmp, "%s", subscribe_str.c_str());
-      //Serial.println(buffer_tmp);
       client.subscribe(buffer_tmp);
 
       //rechargement ecoute MQTT
@@ -453,8 +449,44 @@ void setup() {
   pinMode(BUTTON_PIN, INPUT);
 
   Serial.begin(115200);
-  delay(10);
+  delay(1000);
   Serial.println("Start programm.");
+
+  //CPU information on boot
+  //function takes the following frequencies as valid values:
+  //  240, 160, 80    <<< For all XTAL types
+  //  40, 20, 10      <<< For 40MHz XTAL
+  //  26, 13          <<< For 26MHz XTAL
+  //  24, 12          <<< For 24MHz XTAL
+  //bool setCpuFrequencyMhz(uint32_t cpu_freq_mhz);
+
+  uint32_t ui32XtalFreq = getXtalFrequencyMhz(); // In MHz
+  uint32_t ui32CpuFreq  = getCpuFrequencyMhz();  // In MHz
+  uint32_t ui32ApbFreq  = getApbFrequency();     // In Hz
+
+  Serial.print("Frequence horloge:");
+  Serial.println(ui32XtalFreq);
+  Serial.print("frequence du CPU:");
+  Serial.println(ui32CpuFreq);
+  Serial.print("Frequence du bus APB:");
+  Serial.println(ui32ApbFreq);
+
+  //change frequency 80MHz
+  Serial.print("Changement frequence CPU a 80MHz:");
+  bool boolCpuFreq = false;
+  boolCpuFreq = setCpuFrequencyMhz(80);
+  Serial.println(boolCpuFreq);
+
+  ui32XtalFreq = getXtalFrequencyMhz(); // In MHz
+  ui32CpuFreq  = getCpuFrequencyMhz();  // In MHz
+  ui32ApbFreq  = getApbFrequency();     // In Hz
+
+  Serial.print("Frequence horloge:");
+  Serial.println(ui32XtalFreq);
+  Serial.print("frequence du CPU:");
+  Serial.println(ui32CpuFreq);
+  Serial.print("Frequence du bus APB:");
+  Serial.println(ui32ApbFreq);
 
   //Increment boot number and print it every reboot
   bootCount = bootCount + 1;
@@ -545,7 +577,7 @@ void loop() {
       M5.dis.displaybuff(DisBuff);
 
       intcounter++;
-      sprintf (msg, "{\"ssid\":%s,\"rssi\":%d,\"counter\":%d}", WiFi.SSID().c_str(), WiFi.RSSI(), intcounter);
+      sprintf (msg, "{\"ssid\":%s,\"rssi\":%d,\"counter\":%d,\"tempcpu\":%d}", WiFi.SSID().c_str(), WiFi.RSSI(), intcounter, intTempCpu);
       Serial.print("Publish message: ");
       Serial.print(clientIdMqtt.c_str());
       Serial.print(" ");
@@ -554,7 +586,6 @@ void loop() {
 
       // init subscribe
       sprintf(buffer_tmp, "%s", subscribe_str.c_str());
-      //Serial.println(buffer_tmp);
       client.subscribe(buffer_tmp);
 
       //rechargement ecoute MQTT
@@ -651,8 +682,11 @@ void void_fct_info_uart(unsigned long ulong_interval)
   if ( (ulong_time_now - ulong_time_meas_cycle) >= ulong_interval )
   {
     ulong_time_meas_cycle = ulong_time_now;
-    Serial.print("infos");
-    Serial.println("To Do.....");
+
+    //Measure internal temperature esp32
+    intTempCpu = ((temprature_sens_read() - 32) / 1.8);
+
+    Serial.println(intTempCpu);
   }
 }
 
@@ -769,11 +803,12 @@ void send_status_mqtt(unsigned long ulong_interval)
     {
       //envoi status MQTT
       intcounter++;
-      sprintf (buffer_tmp, "{\"ssid\":%s,\"rssi\":%d,\"counter\":%d}", WiFi.SSID().c_str(), WiFi.RSSI(), intcounter);
+      sprintf (buffer_tmp, "{\"ssid\":%s,\"rssi\":%d,\"counter\":%d,\"tempcpu\":%d}", WiFi.SSID().c_str(), WiFi.RSSI(), intcounter, intTempCpu);
+
       Serial.print("Publish message: ");
       Serial.print(clientIdMqtt.c_str());
       Serial.print(" ");
-      Serial.println(msg);
+      Serial.println(buffer_tmp);
       client.publish(clientIdMqtt.c_str(), buffer_tmp);
 
       // init subscribe
@@ -790,7 +825,7 @@ void send_status_mqtt(unsigned long ulong_interval)
 
 
 /*
- * TO DO
- * - ajout message json reception en MQTT
- * - ajout action radio 433 en accord avec les message json
- */
+   TO DO
+   - ajout message json reception en MQTT
+   - ajout action radio 433 en accord avec les message json
+*/
