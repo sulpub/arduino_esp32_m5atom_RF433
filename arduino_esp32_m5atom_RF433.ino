@@ -17,7 +17,7 @@
       entrée module radio)
 
   Format trame JSON:
-    code : sur 5 caractéres 0 ou F (exemple "00FF0") en fonction des 
+    code : sur 5 caractéres 0 ou F (exemple "00FF0") en fonction des
            dip switch sur les recepteurs
     channel 0 : A
     channel 1 : B
@@ -26,7 +26,7 @@
     state 0 : OFF
     state 1 : ON
 
-  Exemple de trame JSON a envoyé en MQTT avec le topic "action_telecommande_433" : 
+  Exemple de trame JSON a envoyé en MQTT avec le topic "action_telecommande_433" :
   bouton A ON  : {"code":"F0F00","channel":0,"state":1}
   bouton A OFF : {"code":"F0F00","channel":0,"state":0}
   bouton B ON  : {"code":"F0F00","channel":1,"state":1}
@@ -118,6 +118,9 @@ String clientPassMqtt         = "password MQTT - a remplir";
 //define button
 #define BUTTON_PIN 39
 
+//define capteur PIR
+#define PIR_PIN 32
+
 // Number de test max
 #define TEST_WIFI      1  //20
 #define TEST_MQTT      1  //5
@@ -178,6 +181,9 @@ int intChannel = 0;
 int intState = 0;
 int intDemandeCmdRf433 = 0;
 int intErrorCmdReceive = 0;
+
+//pir sensor variable
+int intPirSensor = 0;
 
 /*
     _________       __                  __      __.______________.___
@@ -419,7 +425,7 @@ void reconnect() {
         M5.dis.displaybuff(DisBuff);
 
         intcounter++;
-        sprintf (msg, "{\"ssid\":%s,\"rssi\":%d,\"counter\":%d,\"tempcpu\":%d}", WiFi.SSID().c_str(), WiFi.RSSI(), intcounter, intTempCpu);
+        sprintf (msg, "{\"ssid\":\"%s\",\"rssi\":%d,\"counter\":%d,\"tempcpu\":%d}", WiFi.SSID().c_str(), WiFi.RSSI(), intcounter, intTempCpu);
 
         Serial.print("Publish message: ");
         Serial.print(clientIdMqtt.c_str());
@@ -458,7 +464,7 @@ void reconnect() {
       delay(random(200)); // Delay for a period of time (in milliseconds).
 
       intcounter++;
-      sprintf (msg, "{\"ssid\":%s,\"rssi\":%d,\"counter\":%d,\"tempcpu\":%d}", WiFi.SSID().c_str(), WiFi.RSSI(), intcounter, intTempCpu);
+      sprintf (msg, "{\"ssid\":\"%s\",\"rssi\":%d,\"counter\":%d,\"tempcpu\":%d}", WiFi.SSID().c_str(), WiFi.RSSI(), intcounter, intTempCpu);
 
       Serial.print("Publish message: ");
       Serial.print(clientIdMqtt.c_str());
@@ -561,6 +567,9 @@ void setup() {
   //button
   pinMode(BUTTON_PIN, INPUT);
 
+  //pir sensor
+  pinMode(PIR_PIN, INPUT);
+
   Serial.begin(115200);
   delay(1000);
   Serial.println("Start programm.");
@@ -585,9 +594,9 @@ void setup() {
   Serial.println(ui32ApbFreq);
 
   //change frequency 80MHz
-  Serial.print("Changement frequence CPU a 80MHz:");
+  Serial.print("Changement frequence CPU a 160MHz:");
   bool boolCpuFreq = false;
-  boolCpuFreq = setCpuFrequencyMhz(80);
+  boolCpuFreq = setCpuFrequencyMhz(160);
   Serial.println(boolCpuFreq);
 
   ui32XtalFreq = getXtalFrequencyMhz(); // In MHz
@@ -622,7 +631,7 @@ void setup() {
   mySwitch.setPulseLength(325);
 
   // Optional set number of transmission repetitions.
-  //mySwitch.setRepeatTransmit(15);
+  mySwitch.setRepeatTransmit(15);
 
   //Init wifi
   setup_wifi();
@@ -690,7 +699,7 @@ void loop() {
       M5.dis.displaybuff(DisBuff);
 
       intcounter++;
-      sprintf (msg, "{\"ssid\":%s,\"rssi\":%d,\"counter\":%d,\"tempcpu\":%d}", WiFi.SSID().c_str(), WiFi.RSSI(), intcounter, intTempCpu);
+      sprintf (msg, "{\"ssid\":\"%s\",\"rssi\":%d,\"counter\":%d,\"tempcpu\":%d}", WiFi.SSID().c_str(), WiFi.RSSI(), intcounter, intTempCpu);
       Serial.print("Publish message: ");
       Serial.print(clientIdMqtt.c_str());
       Serial.print(" ");
@@ -712,7 +721,7 @@ void loop() {
   }
 
   //debug uart
-  void_fct_info_uart(10000);
+  void_fct_info_uart(1000);
 
   /* use RF module 433MHz or connect out of the RF command PHENIX */
   //{"code":,"channel":,"status":}
@@ -729,7 +738,7 @@ void loop() {
     mySwitch.sendTriState(buffer_cmd);
     Serial.print("TRAME RF envoyé ----->");
     Serial.println(buffer_cmd);
-    delay(1000);
+    delay(100);
   }
 }
 
@@ -755,8 +764,14 @@ void void_fct_info_uart(unsigned long ulong_interval)
 
     //Measure internal temperature esp32
     intTempCpu = ((temprature_sens_read() - 32) / 1.8);
+    Serial.print(intTempCpu);
+    Serial.print(",");
 
-    Serial.println(intTempCpu);
+    //read PIR sensor
+    intPirSensor = digitalRead(PIR_PIN);
+    Serial.print(intPirSensor);
+    Serial.println();
+
   }
 }
 
@@ -873,7 +888,7 @@ void send_status_mqtt(unsigned long ulong_interval)
     {
       //envoi status MQTT
       intcounter++;
-      sprintf (buffer_tmp, "{\"ssid\":%s,\"rssi\":%d,\"counter\":%d,\"tempcpu\":%d}", WiFi.SSID().c_str(), WiFi.RSSI(), intcounter, intTempCpu);
+      sprintf (buffer_tmp, "{\"ssid\":\"%s\",\"rssi\":%d,\"counter\":%d,\"tempcpu\":%d}", WiFi.SSID().c_str(), WiFi.RSSI(), intcounter, intTempCpu);
 
       Serial.print("Publish message: ");
       Serial.print(clientIdMqtt.c_str());
