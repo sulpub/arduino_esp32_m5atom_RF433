@@ -184,6 +184,68 @@ int intErrorCmdReceive = 0;
 
 //pir sensor variable
 int intPirSensor = 0;
+int inttransition0to1 = 0;
+int intoldtransition0to1 = 0;
+
+//Variables emission trame JSON
+String stringJsonEnvoi = "";
+JSONVar JsonArrayEnvoi;
+
+
+
+/*
+    _____                    __  .__
+  _/ ____\_ __  ____   _____/  |_|__| ____   ____   ______
+  \   __\  |  \/    \_/ ___\   __\  |/  _ \ /    \ /  ___/
+   |  | |  |  /   |  \  \___|  | |  (  <_> )   |  \\___ \
+   |__| |____/|___|  /\___  >__| |__|\____/|___|  /____  >
+                   \/     \/                    \/     \/
+*/
+//---------------------FUNCTION----------------------------------
+
+void sensor_in_live(void);
+void measure_distance(int int_spec);
+void compteur (void);
+void print_wakeup_reason();
+void void_fct_info_uart(unsigned long ulong_interval);
+
+void send_status_mqtt(unsigned long ulong_interval);
+void createJsonMessage(void);
+
+void pirmeasure(void);
+
+//watchdog reset
+void IRAM_ATTR resetModule()
+{
+  ets_printf("reboot watchdog\n");
+  esp_restart();
+}
+
+//buffer used for neopixel matrix on ATOM_MATRIX
+void setBuff(uint8_t Rdata, uint8_t Gdata, uint8_t Bdata)
+{
+  DisBuff[0] = 0x05;
+  DisBuff[1] = 0x05;
+  for (int i = 0; i < 25; i++)
+  {
+    DisBuff[2 + i * 3 + 0] = Rdata;
+    DisBuff[2 + i * 3 + 1] = Gdata;
+    DisBuff[2 + i * 3 + 2] = Bdata;
+  }
+}
+
+// ------------------------INTERNAL TEMPERATURE ----------------
+#ifdef __cplusplus
+extern "C" {
+#endif
+uint8_t temprature_sens_read();
+#ifdef __cplusplus
+}
+#endif
+uint8_t temprature_sens_read();
+// ---------------------FIN INTERNAL TEMPERATURE ----------------
+
+
 
 /*
     _________       __                  __      __.______________.___
@@ -425,6 +487,7 @@ void reconnect() {
         M5.dis.displaybuff(DisBuff);
 
         intcounter++;
+        createJsonMessage();
         sprintf (msg, "{\"ssid\":\"%s\",\"rssi\":%d,\"counter\":%d,\"tempcpu\":%d}", WiFi.SSID().c_str(), WiFi.RSSI(), intcounter, intTempCpu);
 
         Serial.print("Publish message: ");
@@ -464,6 +527,7 @@ void reconnect() {
       delay(random(200)); // Delay for a period of time (in milliseconds).
 
       intcounter++;
+      createJsonMessage();
       sprintf (msg, "{\"ssid\":\"%s\",\"rssi\":%d,\"counter\":%d,\"tempcpu\":%d}", WiFi.SSID().c_str(), WiFi.RSSI(), intcounter, intTempCpu);
 
       Serial.print("Publish message: ");
@@ -487,57 +551,6 @@ void reconnect() {
 
 void status_wifi(void);
 void status_mqtt(void);
-
-
-
-/*
-    _____                    __  .__
-  _/ ____\_ __  ____   _____/  |_|__| ____   ____   ______
-  \   __\  |  \/    \_/ ___\   __\  |/  _ \ /    \ /  ___/
-   |  | |  |  /   |  \  \___|  | |  (  <_> )   |  \\___ \
-   |__| |____/|___|  /\___  >__| |__|\____/|___|  /____  >
-                   \/     \/                    \/     \/
-*/
-//---------------------FUNCTION----------------------------------
-
-void sensor_in_live(void);
-void measure_distance(int int_spec);
-void compteur (void);
-void print_wakeup_reason();
-void void_fct_info_uart(unsigned long ulong_interval);
-
-void send_status_mqtt(unsigned long ulong_interval);
-
-//watchdog reset
-void IRAM_ATTR resetModule()
-{
-  ets_printf("reboot watchdog\n");
-  esp_restart();
-}
-
-//buffer used for neopixel matrix on ATOM_MATRIX
-void setBuff(uint8_t Rdata, uint8_t Gdata, uint8_t Bdata)
-{
-  DisBuff[0] = 0x05;
-  DisBuff[1] = 0x05;
-  for (int i = 0; i < 25; i++)
-  {
-    DisBuff[2 + i * 3 + 0] = Rdata;
-    DisBuff[2 + i * 3 + 1] = Gdata;
-    DisBuff[2 + i * 3 + 2] = Bdata;
-  }
-}
-
-// ------------------------INTERNAL TEMPERATURE ----------------
-#ifdef __cplusplus
-extern "C" {
-#endif
-uint8_t temprature_sens_read();
-#ifdef __cplusplus
-}
-#endif
-uint8_t temprature_sens_read();
-// ---------------------FIN INTERNAL TEMPERATURE ----------------
 
 
 
@@ -670,6 +683,9 @@ void loop() {
 
   client.loop();
 
+  //mesure pir
+  pirmeasure();
+  
   //envoi status MQTT toute les 20 secondes (en vie)
   send_status_mqtt(20000);
 
@@ -699,6 +715,7 @@ void loop() {
       M5.dis.displaybuff(DisBuff);
 
       intcounter++;
+      createJsonMessage();
       sprintf (msg, "{\"ssid\":\"%s\",\"rssi\":%d,\"counter\":%d,\"tempcpu\":%d}", WiFi.SSID().c_str(), WiFi.RSSI(), intcounter, intTempCpu);
       Serial.print("Publish message: ");
       Serial.print(clientIdMqtt.c_str());
@@ -888,6 +905,7 @@ void send_status_mqtt(unsigned long ulong_interval)
     {
       //envoi status MQTT
       intcounter++;
+      createJsonMessage();
       sprintf (buffer_tmp, "{\"ssid\":\"%s\",\"rssi\":%d,\"counter\":%d,\"tempcpu\":%d}", WiFi.SSID().c_str(), WiFi.RSSI(), intcounter, intTempCpu);
 
       Serial.print("Publish message: ");
@@ -909,6 +927,71 @@ void send_status_mqtt(unsigned long ulong_interval)
 }
 
 
+
+void createJsonMessage(void)
+{
+  //trame JSON envoi
+  JsonArrayEnvoi[0] = "ssid";
+  JsonArrayEnvoi[1] = WiFi.SSID().c_str();
+  JsonArrayEnvoi[2] = "rssi";
+  JsonArrayEnvoi[3] = WiFi.RSSI();
+  JsonArrayEnvoi[4] = "counter";
+  JsonArrayEnvoi[5] = intcounter;
+  JsonArrayEnvoi[6] = "tempcpu";
+  JsonArrayEnvoi[7] = intTempCpu;
+
+  stringJsonEnvoi = JSON.stringify(JsonArrayEnvoi);
+
+  Serial.print("Message JSON: ");
+  Serial.println(stringJsonEnvoi);
+}
+
+
+void pirmeasure(void)
+{
+  //read PIR sensor
+  intPirSensor = digitalRead(PIR_PIN);
+  inttransition0to1 = intPirSensor;
+
+  if (inttransition0to1 != intoldtransition0to1)
+  {
+    //send alerte
+    intoldtransition0to1 = inttransition0to1;
+
+    //transistion 0->1
+    if (inttransition0to1 == 1)
+    {
+      //envoi MQTT
+      sprintf (msg, "{\"alarm\":%d}", inttransition0to1);
+
+      Serial.print("Publish message: ");
+      Serial.print(clientIdMqttAlarm.c_str());
+      Serial.print(" ");
+      Serial.println(msg);
+      client.publish(clientIdMqttAlarm.c_str(), msg);
+
+    }
+    else
+    {
+      //envoi MQTT
+      sprintf (msg, "{\"alarm\":%d}", inttransition0to1);
+
+      Serial.print("Publish message: ");
+      Serial.print(clientIdMqttAlarm.c_str());
+      Serial.print(" ");
+      Serial.println(msg);
+      client.publish(clientIdMqttAlarm.c_str(), msg);
+    }
+
+    // init subscribe
+    sprintf(buffer_tmp, "%s", subscribe_str.c_str());
+    client.subscribe(buffer_tmp);
+
+    //rechargement ecoute MQTT
+    client.setCallback(callback_mqtt);
+  }
+
+}
 /*
    TO DO
    - documentation du code
