@@ -16,6 +16,21 @@
     - pin26 (soudure fil sur la pin 17 du composant HX2262 (acces pin
       entrée module radio)
 
+  Photodiode
+  33bdx transistor
+  https://www.farnell.com/datasheets/2307019.pdf
+      ______
+     |      |
+     |      |
+     |      |
+     --------
+      |  |  |
+      B  +  GND
+
+      B : entre capteur solaire
+      + : 33 input pullup  (ADC)
+      - : 23 output GND
+
   Format trame JSON:
     code : sur 5 caractéres 0 ou F (exemple "00FF0") en fonction des
            dip switch sur les recepteurs
@@ -97,6 +112,8 @@ const char* mqtt_server       = "ip serveur MQTT - a remplir";
 
 // value for MQTT broker.
 String clientIdMqtt           = "telecommande_433";
+String clientIdMqttAlarm      = "telecommande_433_alarm";
+String clientIdMqttConso      = "conso_case";
 String subscribe_str          = "action_telecommande_433";
 String clientLoginMqtt        = "login MQTT - a remplir";
 String clientPassMqtt         = "password MQTT - a remplir";
@@ -126,7 +143,19 @@ String clientPassMqtt         = "password MQTT - a remplir";
 #define TEST_MQTT      1  //5
 
 
+// pin photodiode
+#define PHOTODIODE1_GND_PIN  23
+#define PHOTODIODE2_PIN  33
 
+//timing
+#define PERIOD_SEND_CONSO 60000   //60 secondes / 1 minute
+
+//debug
+#define DEBUG_UART 0
+
+
+//ADC
+#define NB_POINTS  32
 /*
                       .__      ___.   .__
   ___  _______ _______|__|____ \_ |__ |  |   ____   ______
@@ -146,13 +175,14 @@ unsigned long ulong_time_now = 0;
 unsigned long ulong_time_meas_cycle = 0;
 unsigned long ulong_diff_time_meas_cycle = 0;
 unsigned long ulong_time_send_meas_cycle = 0;
+unsigned long ulong_time_send_conso = 0;
 
 RTC_DATA_ATTR int bootCount = 0;
 
 int count_lost_mqtt = 0;
 int count_lost_wifi = 0;
 
-const int wdtTimeout = 10000;  //20000ms=20s time in ms to trigger the watchdog
+const int wdtTimeout = 60000;  //20000ms=20s time in ms to trigger the watchdog
 hw_timer_t *timer = NULL;
 
 
@@ -191,6 +221,15 @@ int intoldtransition0to1 = 0;
 String stringJsonEnvoi = "";
 JSONVar JsonArrayEnvoi;
 
+//photodiode sensor
+int intPhotodiodeSensor = 0;
+long int flashcountPhotodiode = 0;
+int intAdcPhotodiode = 0;
+int intMat[NB_POINTS];
+long int ui32Sum = 0;
+int intmean = 0;
+int indice = 0;
+int intUp = 0;
 
 
 /*
@@ -213,6 +252,12 @@ void send_status_mqtt(unsigned long ulong_interval);
 void createJsonMessage(void);
 
 void pirmeasure(void);
+
+void adcPhotodiodeMeas(void);
+
+void sendconso(void);
+
+void callback_mqtt(char* topic, byte* payload, unsigned int length);
 
 //watchdog reset
 void IRAM_ATTR resetModule()
@@ -490,10 +535,13 @@ void reconnect() {
         createJsonMessage();
         sprintf (msg, "{\"ssid\":\"%s\",\"rssi\":%d,\"counter\":%d,\"tempcpu\":%d}", WiFi.SSID().c_str(), WiFi.RSSI(), intcounter, intTempCpu);
 
-        Serial.print("Publish message: ");
-        Serial.print(clientIdMqtt.c_str());
-        Serial.print(" ");
-        Serial.println(msg);
+        if (DEBUG_UART == 1)
+        {
+          Serial.print("Publish message: ");
+          Serial.print(clientIdMqtt.c_str());
+          Serial.print(" ");
+          Serial.println(msg);
+        }
         client.publish(clientIdMqtt.c_str(), msg);
 
         // init subscribe
@@ -530,10 +578,13 @@ void reconnect() {
       createJsonMessage();
       sprintf (msg, "{\"ssid\":\"%s\",\"rssi\":%d,\"counter\":%d,\"tempcpu\":%d}", WiFi.SSID().c_str(), WiFi.RSSI(), intcounter, intTempCpu);
 
-      Serial.print("Publish message: ");
-      Serial.print(clientIdMqtt.c_str());
-      Serial.print(" ");
-      Serial.println(msg);
+      if (DEBUG_UART == 1)
+      {
+        Serial.print("Publish message: ");
+        Serial.print(clientIdMqtt.c_str());
+        Serial.print(" ");
+        Serial.println(msg);
+      }
       client.publish(clientIdMqtt.c_str(), msg);
 
       // init subscribe
@@ -549,6 +600,9 @@ void reconnect() {
 
 }
 
+
+
+//FUNCTION DECLARATION
 void status_wifi(void);
 void status_mqtt(void);
 
@@ -581,9 +635,22 @@ void setup() {
   pinMode(BUTTON_PIN, INPUT);
 
   //pir sensor
-  pinMode(PIR_PIN, INPUT);
+  pinMode(PIR_PIN, INPUT_PULLUP);
 
-  Serial.begin(115200);
+  //photodiode sensor
+  //  B : entre capteur solaire
+  //  + : 33 input pullup
+  //  - : 23 output GND
+  pinMode(PHOTODIODE1_GND_PIN, OUTPUT);
+  digitalWrite(PHOTODIODE1_GND_PIN, LOW);
+
+  //interruption sur photodiode
+  pinMode(PHOTODIODE2_PIN, INPUT_PULLUP);
+  //intPhotodiodeSensor = digitalRead(PHOTODIODE2_PIN);
+  //RISING  FALLING CHANGE
+  //attachInterrupt(PHOTODIODE2_PIN, interruptFlashDetect, RISING);
+
+  Serial.begin(1500000);
   delay(1000);
   Serial.println("Start programm.");
 
@@ -607,9 +674,9 @@ void setup() {
   Serial.println(ui32ApbFreq);
 
   //change frequency 80MHz
-  Serial.print("Changement frequence CPU a 160MHz:");
+  Serial.print("Changement frequence CPU a 240MHz:");
   bool boolCpuFreq = false;
-  boolCpuFreq = setCpuFrequencyMhz(160);
+  boolCpuFreq = setCpuFrequencyMhz(240);
   Serial.println(boolCpuFreq);
 
   ui32XtalFreq = getXtalFrequencyMhz(); // In MHz
@@ -685,7 +752,11 @@ void loop() {
 
   //mesure pir
   pirmeasure();
-  
+
+  //send conso
+  adcPhotodiodeMeas();
+  sendconso();
+
   //envoi status MQTT toute les 20 secondes (en vie)
   send_status_mqtt(20000);
 
@@ -717,10 +788,14 @@ void loop() {
       intcounter++;
       createJsonMessage();
       sprintf (msg, "{\"ssid\":\"%s\",\"rssi\":%d,\"counter\":%d,\"tempcpu\":%d}", WiFi.SSID().c_str(), WiFi.RSSI(), intcounter, intTempCpu);
-      Serial.print("Publish message: ");
-      Serial.print(clientIdMqtt.c_str());
-      Serial.print(" ");
-      Serial.println(msg);
+
+      if (DEBUG_UART == 1)
+      {
+        Serial.print("Publish message: ");
+        Serial.print(clientIdMqtt.c_str());
+        Serial.print(" ");
+        Serial.println(msg);
+      }
       client.publish(clientIdMqtt.c_str(), msg);
 
       // init subscribe
@@ -738,7 +813,10 @@ void loop() {
   }
 
   //debug uart
-  void_fct_info_uart(1000);
+  if (DEBUG_UART == 1)
+  {
+    void_fct_info_uart(1000);
+  }
 
   /* use RF module 433MHz or connect out of the RF command PHENIX */
   //{"code":,"channel":,"status":}
@@ -755,7 +833,7 @@ void loop() {
     mySwitch.sendTriState(buffer_cmd);
     Serial.print("TRAME RF envoyé ----->");
     Serial.println(buffer_cmd);
-    delay(100);
+    //delay(100);
   }
 }
 
@@ -907,11 +985,13 @@ void send_status_mqtt(unsigned long ulong_interval)
       intcounter++;
       createJsonMessage();
       sprintf (buffer_tmp, "{\"ssid\":\"%s\",\"rssi\":%d,\"counter\":%d,\"tempcpu\":%d}", WiFi.SSID().c_str(), WiFi.RSSI(), intcounter, intTempCpu);
-
-      Serial.print("Publish message: ");
-      Serial.print(clientIdMqtt.c_str());
-      Serial.print(" ");
-      Serial.println(buffer_tmp);
+      if (DEBUG_UART == 1)
+      {
+        Serial.print("Publish message: ");
+        Serial.print(clientIdMqtt.c_str());
+        Serial.print(" ");
+        Serial.println(buffer_tmp);
+      }
       client.publish(clientIdMqtt.c_str(), buffer_tmp);
 
       // init subscribe
@@ -942,11 +1022,23 @@ void createJsonMessage(void)
 
   stringJsonEnvoi = JSON.stringify(JsonArrayEnvoi);
 
-  Serial.print("Message JSON: ");
-  Serial.println(stringJsonEnvoi);
+  if (DEBUG_UART == 1)
+  {
+    Serial.print("Message JSON: ");
+    Serial.println(stringJsonEnvoi);
+  }
 }
 
 
+
+/*
+         .__
+  ______ |__|______  _____   ____ _____    ________ _________   ____
+  \____ \|  \_  __ \/     \_/ __ \\__  \  /  ___/  |  \_  __ \_/ __ \
+  |  |_> >  ||  | \/  Y Y  \  ___/ / __ \_\___ \|  |  /|  | \/\  ___/
+  |   __/|__||__|  |__|_|  /\___  >____  /____  >____/ |__|    \___  >
+  |__|                   \/     \/     \/     \/                   \/
+*/
 void pirmeasure(void)
 {
   //read PIR sensor
@@ -963,11 +1055,13 @@ void pirmeasure(void)
     {
       //envoi MQTT
       sprintf (msg, "{\"alarm\":%d}", inttransition0to1);
-
-      Serial.print("Publish message: ");
-      Serial.print(clientIdMqttAlarm.c_str());
-      Serial.print(" ");
-      Serial.println(msg);
+      if (DEBUG_UART == 1)
+      {
+        Serial.print("Publish message: ");
+        Serial.print(clientIdMqttAlarm.c_str());
+        Serial.print(" ");
+        Serial.println(msg);
+      }
       client.publish(clientIdMqttAlarm.c_str(), msg);
 
     }
@@ -976,10 +1070,13 @@ void pirmeasure(void)
       //envoi MQTT
       sprintf (msg, "{\"alarm\":%d}", inttransition0to1);
 
-      Serial.print("Publish message: ");
-      Serial.print(clientIdMqttAlarm.c_str());
-      Serial.print(" ");
-      Serial.println(msg);
+      if (DEBUG_UART == 1)
+      {
+        Serial.print("Publish message: ");
+        Serial.print(clientIdMqttAlarm.c_str());
+        Serial.print(" ");
+        Serial.println(msg);
+      }
       client.publish(clientIdMqttAlarm.c_str(), msg);
     }
 
@@ -989,6 +1086,73 @@ void pirmeasure(void)
 
     //rechargement ecoute MQTT
     client.setCallback(callback_mqtt);
+  }
+
+}
+
+
+
+/*
+                           .___
+   ______ ____   ____    __| _/____  ____   ____   __________
+  /  ___// __ \ /    \  / __ |/ ___\/  _ \ /    \ /  ___/  _ \
+  \___ \\  ___/|   |  \/ /_/ \  \__(  <_> )   |  \\___ (  <_> )
+  /____  >\___  >___|  /\____ |\___  >____/|___|  /____  >____/
+       \/     \/     \/      \/    \/           \/     \/
+*/
+void sendconso(void)
+{
+  if ( (ulong_time_now - ulong_time_send_conso) >= PERIOD_SEND_CONSO )
+  {
+    ulong_time_send_conso = ulong_time_now;
+
+    //envoi MQTT conso
+    sprintf (msg, "{\"conso\":%d}", flashcountPhotodiode);
+    if (DEBUG_UART == 1)
+    {
+      Serial.print("Publish message: ");
+      Serial.print(clientIdMqttConso.c_str());
+      Serial.print(" ");
+      Serial.println(msg);
+    }
+    client.publish(clientIdMqttConso.c_str(), msg);
+  }
+}
+
+
+
+void adcPhotodiodeMeas(void)
+{
+  intAdcPhotodiode = analogRead(PHOTODIODE2_PIN);
+  intMat[indice % NB_POINTS] = intAdcPhotodiode;
+  ui32Sum -= intMat[(indice + 1) % NB_POINTS];
+  ui32Sum += intAdcPhotodiode;
+  indice++;
+
+  intmean = (int)(ui32Sum / NB_POINTS);
+  Serial.print(flashcountPhotodiode);
+  Serial.print(",");
+  Serial.print(0);
+  Serial.print(",");
+  Serial.print(200);
+  Serial.print(",");
+  Serial.print(intUp * 200);
+  Serial.print(",");
+  Serial.print(intAdcPhotodiode);
+  Serial.print(",");
+  Serial.println(intmean);
+
+
+  //compteur
+  if (intmean > 270 && (intUp == 0) )
+  {
+    intUp = 1;
+    flashcountPhotodiode++;
+  }
+
+  if (intmean < 260 )
+  {
+    intUp = 0;
   }
 
 }
