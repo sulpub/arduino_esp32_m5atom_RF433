@@ -5,31 +5,39 @@
   d'une telecommande phenix YC-4000S
 
   https://github.com/sui77/rc-switch/
-
   https://gladysassistant.com/fr/blog/gerer-les-appareils-electrique/
-
   https://docs.m5stack.com/en/core/atom_lite
 
   M5stack ATOM LITE
+                        ------------
+                  3V3 -|            |
+                  G22 -|            |- G21
+                  G19 -|            |- G25
+  temp_DS1820     G23 -|            |- 5V
+  phototransistor G33 -|            |- GND
+                        ------------
+                         |   |  |  |
+                        GND 5V 26  32
+                             A  R   P
+                             L  F   I
+                             I  4   R
+                             M  3
+                                3
+
   grove port
     - 5V / GND alimentation pile de la telecommande PHENIX YC-4000S
     - pin26 (soudure fil sur la pin 17 du composant HX2262 (acces pin
       entrée module radio)
+    - pin32 : capteur PIR
 
-  Photodiode
-  33bdx transistor
-  https://www.farnell.com/datasheets/2307019.pdf
-      ______
-     |      |
-     |      |
-     |      |
-     --------
-      |  |  |
-      B  +  GND
+  Phototransistor
+  lilypad light sensor : ALS-PT19
+  https://www.sparkfun.com/products/14629?utm_source=pocket_mylist
+    - pin 33 (aDC : lilypad light sensor
 
-      B : entre capteur solaire
-      + : 33 input pullup  (ADC)
-      - : 23 output GND
+  Capteur température one wire dallas DS1820/DS18b20/18B20
+  https://fr.aliexpress.com/item/4000895660165.html?spm=a2g0o.productlist.0.0.793f1875tGvAqG&algo_pvid=b78b92be-1a91-4536-9b05-378ffc7775d8&aem_p4p_detail=202209101112194742672937708280000748024&algo_exp_id=b78b92be-1a91-4536-9b05-378ffc7775d8-34&pdp_ext_f=%7B%22sku_id%22%3A%2210000010464721123%22%7D&pdp_npi=2%40dis%21EUR%211.3%211.17%21%21%211.16%21%21%400b0a187b16628335392597791ed917%2110000010464721123%21sea&curPageLogUid=Kyo8ggpH8YU2&ad_pvid=202209101112194742672937708280000748024_7
+    - pin
 
   Format trame JSON:
     code : sur 5 caractéres 0 ou F (exemple "00FF0") en fonction des
@@ -78,6 +86,8 @@ RCSwitch mySwitch = RCSwitch();
 
 #include <Arduino_JSON.h>
 
+#include <OneWire.h>
+#include <DallasTemperature.h>
 
 /*
     ________.__        ___.          .__                                              __
@@ -93,9 +103,9 @@ RCSwitch mySwitch = RCSwitch();
 const char* ssid1             = "ssid wifi - a remplir";
 const char* password1         = "password wifi - a remplir";
 
-//const char* ssid2           = "";
-//const char* password2       = "";
-//
+const char* ssid2           = "ssid wifi - a remplir";
+const char* password2       = "password wifi - a remplir";
+
 //const char* ssid3           = "";
 //const char* password3       = "";
 //
@@ -142,17 +152,15 @@ String clientPassMqtt         = "password MQTT - a remplir";
 #define TEST_WIFI      1  //20
 #define TEST_MQTT      1  //5
 
-
 // pin photodiode
-#define PHOTODIODE1_GND_PIN  23
 #define PHOTODIODE2_PIN  33
+#define TEMPERATURE_PIN  23
 
 //timing
 #define PERIOD_SEND_CONSO 60000   //60 secondes / 1 minute
 
 //debug
-#define DEBUG_UART 0
-
+#define DEBUG_UART 1
 
 //ADC
 #define NB_POINTS  32
@@ -231,6 +239,12 @@ int intmean = 0;
 int indice = 0;
 int intUp = 0;
 
+//capteur température onewire DS1820
+OneWire oneWire(TEMPERATURE_PIN);
+DallasTemperature tempOneWire(&oneWire);
+float temperatureExterne = 0;
+
+
 
 /*
     _____                    __  .__
@@ -241,21 +255,21 @@ int intUp = 0;
                    \/     \/                    \/     \/
 */
 //---------------------FUNCTION----------------------------------
-
 void sensor_in_live(void);
 void measure_distance(int int_spec);
 void compteur (void);
 void print_wakeup_reason();
-void void_fct_info_uart(unsigned long ulong_interval);
+void void_fct_info_uart(int logUart);
 
 void send_status_mqtt(unsigned long ulong_interval);
 void createJsonMessage(void);
 
-void pirmeasure(void);
+void pirmeasure(int logUart);
 
-void adcPhotodiodeMeas(void);
+void adcPhotodiodeMeas(int logUart);
+void tempMeas(int logUart);
 
-void sendconso(void);
+void sendconso(int logUart);
 
 void callback_mqtt(char* topic, byte* payload, unsigned int length);
 
@@ -316,7 +330,7 @@ void setup_wifi() {
   timerWrite(timer, 0); //reset timer (feed watchdog)
 
   wifiMulti.addAP(ssid1, password1);
-  //  wifiMulti.addAP(ssid2, password2);
+  wifiMulti.addAP(ssid2, password2);
   //  wifiMulti.addAP(ssid3, password3);
   //  wifiMulti.addAP(ssid4, password4);
   //  wifiMulti.addAP(ssid5, password5);
@@ -641,8 +655,7 @@ void setup() {
   //  B : entre capteur solaire
   //  + : 33 input pullup
   //  - : 23 output GND
-  pinMode(PHOTODIODE1_GND_PIN, OUTPUT);
-  digitalWrite(PHOTODIODE1_GND_PIN, LOW);
+  pinMode(TEMPERATURE_PIN, INPUT);
 
   //interruption sur photodiode
   pinMode(PHOTODIODE2_PIN, INPUT_PULLUP);
@@ -708,10 +721,13 @@ void setup() {
   mySwitch.setProtocol(1);
 
   // Optional set pulse length.
-  mySwitch.setPulseLength(325);
+  mySwitch.setPulseLength(325);  //
 
   // Optional set number of transmission repetitions.
-  mySwitch.setRepeatTransmit(15);
+  mySwitch.setRepeatTransmit(30);
+
+  //init tempereature onewire
+  tempOneWire.begin();
 
   //Init wifi
   setup_wifi();
@@ -751,14 +767,17 @@ void loop() {
   client.loop();
 
   //mesure pir
-  pirmeasure();
+  pirmeasure(DEBUG_UART);
+
+  //mesure temperature externe
+  tempMeas(DEBUG_UART);
 
   //send conso
-  adcPhotodiodeMeas();
-  sendconso();
+  adcPhotodiodeMeas(DEBUG_UART);
+  sendconso(DEBUG_UART);
 
   //envoi status MQTT toute les 20 secondes (en vie)
-  send_status_mqtt(20000);
+  send_status_mqtt(600000);
 
   //réarmement du watchdog (echoue si > 10secondes)
   timerWrite(timer, 0); //reset timer (feed watchdog)
@@ -813,10 +832,7 @@ void loop() {
   }
 
   //debug uart
-  if (DEBUG_UART == 1)
-  {
-    void_fct_info_uart(1000);
-  }
+  void_fct_info_uart(DEBUG_UART);
 
   /* use RF module 433MHz or connect out of the RF command PHENIX */
   //{"code":,"channel":,"status":}
@@ -848,25 +864,34 @@ void loop() {
   |___|___|  /__|  \____/____  > |______/\____|__  /____|_  / |____|
            \/                \/                  \/       \/
 */
-void void_fct_info_uart(unsigned long ulong_interval)
+void void_fct_info_uart(int logUart)
 {
   //ulong_diff_time_meas_cycle = ulong_time_now - ulong_time_meas_cycle;
   //ulong_time_meas_cycle = ulong_time_now;
 
-  if ( (ulong_time_now - ulong_time_meas_cycle) >= ulong_interval )
+  if (logUart == 1)
+  {
+    Serial.print(intTempCpu);
+    Serial.print(",");
+
+    Serial.print(intPirSensor);
+    Serial.println();
+  }
+
+  //mesure debug dans uart
+  if ( (ulong_time_now - ulong_time_meas_cycle) >= 20000 )
   {
     ulong_time_meas_cycle = ulong_time_now;
 
     //Measure internal temperature esp32
     intTempCpu = ((temprature_sens_read() - 32) / 1.8);
-    Serial.print(intTempCpu);
-    Serial.print(",");
+    //    Serial.print(intTempCpu);
+    //    Serial.print(",");
 
     //read PIR sensor
     intPirSensor = digitalRead(PIR_PIN);
-    Serial.print(intPirSensor);
-    Serial.println();
-
+    //    Serial.print(intPirSensor);
+    //    Serial.print(",");
   }
 }
 
@@ -1039,7 +1064,7 @@ void createJsonMessage(void)
   |   __/|__||__|  |__|_|  /\___  >____  /____  >____/ |__|    \___  >
   |__|                   \/     \/     \/     \/                   \/
 */
-void pirmeasure(void)
+void pirmeasure(int logUart)
 {
   //read PIR sensor
   intPirSensor = digitalRead(PIR_PIN);
@@ -1055,7 +1080,7 @@ void pirmeasure(void)
     {
       //envoi MQTT
       sprintf (msg, "{\"alarm\":%d}", inttransition0to1);
-      if (DEBUG_UART == 1)
+      if (logUart == 1)
       {
         Serial.print("Publish message: ");
         Serial.print(clientIdMqttAlarm.c_str());
@@ -1070,7 +1095,7 @@ void pirmeasure(void)
       //envoi MQTT
       sprintf (msg, "{\"alarm\":%d}", inttransition0to1);
 
-      if (DEBUG_UART == 1)
+      if (logUart == 1)
       {
         Serial.print("Publish message: ");
         Serial.print(clientIdMqttAlarm.c_str());
@@ -1100,7 +1125,7 @@ void pirmeasure(void)
   /____  >\___  >___|  /\____ |\___  >____/|___|  /____  >____/
        \/     \/     \/      \/    \/           \/     \/
 */
-void sendconso(void)
+void sendconso(int logUart)
 {
   if ( (ulong_time_now - ulong_time_send_conso) >= PERIOD_SEND_CONSO )
   {
@@ -1108,7 +1133,7 @@ void sendconso(void)
 
     //envoi MQTT conso
     sprintf (msg, "{\"conso\":%d}", flashcountPhotodiode);
-    if (DEBUG_UART == 1)
+    if (logUart == 1)
     {
       Serial.print("Publish message: ");
       Serial.print(clientIdMqttConso.c_str());
@@ -1121,41 +1146,70 @@ void sendconso(void)
 
 
 
-void adcPhotodiodeMeas(void)
+void adcPhotodiodeMeas(int logUart)
 {
-  intAdcPhotodiode = analogRead(PHOTODIODE2_PIN);
+  //pas de mesure conso si detection car pertube la mesure
+  if (inttransition0to1 != 1)
+  {
+    intAdcPhotodiode = analogRead(PHOTODIODE2_PIN);
+  }
+
   intMat[indice % NB_POINTS] = intAdcPhotodiode;
   ui32Sum -= intMat[(indice + 1) % NB_POINTS];
   ui32Sum += intAdcPhotodiode;
   indice++;
 
   intmean = (int)(ui32Sum / NB_POINTS);
-  Serial.print(flashcountPhotodiode);
-  Serial.print(",");
-  Serial.print(0);
-  Serial.print(",");
-  Serial.print(200);
-  Serial.print(",");
-  Serial.print(intUp * 200);
-  Serial.print(",");
-  Serial.print(intAdcPhotodiode);
-  Serial.print(",");
-  Serial.println(intmean);
+
+  if (logUart == 1)
+  {
+    Serial.print(flashcountPhotodiode);
+    Serial.print(",");
+    Serial.print(0);
+    Serial.print(",");
+    Serial.print(2000);
+    Serial.print(",");
+    Serial.print(intUp * 1800);
+    Serial.print(",");
+    Serial.print(intAdcPhotodiode);
+    Serial.print(",");
+    Serial.print(intmean);
+    Serial.print(",");
+  }
+
+  //delay(1);
 
 
-  //compteur
-  if (intmean > 270 && (intUp == 0) )
+  //compteur pas sur moyenne
+  //intmean -> intAdcPhotodiode
+  if (intAdcPhotodiode > 800 && (intUp == 0) )
   {
     intUp = 1;
     flashcountPhotodiode++;
   }
 
-  if (intmean < 260 )
+  if (intAdcPhotodiode < 100 )
   {
     intUp = 0;
   }
 
 }
+
+
+
+void tempMeas(int logUart)
+{
+  temperatureExterne = tempOneWire.getTempCByIndex(0);
+
+  if (logUart == 1)
+  {
+    Serial.print(temperatureExterne);
+    Serial.print(",");
+  }
+}
+
+
+
 /*
    TO DO
    - documentation du code
