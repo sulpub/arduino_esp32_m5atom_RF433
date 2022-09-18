@@ -181,12 +181,16 @@ uint8_t DisBuff[2 + 5 * 5 * 3];
 
 unsigned long ulong_time_now = 0;
 unsigned long ulong_time_meas_cycle = 0;
-unsigned long ulong_diff_time_meas_cycle = 0;
+unsigned long ulong_diff_time_meas_cycle = 6000000;
 unsigned long ulong_time_send_meas_cycle = 0;
 unsigned long ulong_time_send_conso = 0;
+unsigned long ulong_time_meas_loop = 0;
+unsigned long ulong_time_meas_loop_delta = 0;
+
 
 RTC_DATA_ATTR int bootCount = 0;
 
+const uint32_t connectTimeoutMs = 5000;
 int count_lost_mqtt = 0;
 int count_lost_wifi = 0;
 
@@ -231,13 +235,17 @@ JSONVar JsonArrayEnvoi;
 
 //photodiode sensor
 int intPhotodiodeSensor = 0;
+
 long int flashcountPhotodiode = 0;
 int intAdcPhotodiode = 0;
+int intMaxAdcPhotodiode = 0;
 int intMat[NB_POINTS];
 long int ui32Sum = 0;
 int intmean = 0;
 int indice = 0;
 int intUp = 0;
+
+int intUartDebug = DEBUG_UART;
 
 //capteur température onewire DS1820
 OneWire oneWire(TEMPERATURE_PIN);
@@ -329,6 +337,9 @@ void setup_wifi() {
   //réarmement du watchdog (echoue si > 10secondes)
   timerWrite(timer, 0); //reset timer (feed watchdog)
 
+  //wifi client
+  WiFi.mode(WIFI_STA);
+
   wifiMulti.addAP(ssid1, password1);
   wifiMulti.addAP(ssid2, password2);
   //  wifiMulti.addAP(ssid3, password3);
@@ -336,7 +347,7 @@ void setup_wifi() {
   //  wifiMulti.addAP(ssid5, password5);
 
   Serial.println("Connecting Wifi...");
-  if (wifiMulti.run() == WL_CONNECTED) {
+  if (wifiMulti.run(connectTimeoutMs) == WL_CONNECTED) {
     Serial.println("");
     Serial.print("WiFi connected: ");
     Serial.println(WiFi.SSID());
@@ -467,6 +478,15 @@ void callback_mqtt(char* topic, byte* payload, unsigned int length)
       Serial.println("!!!!! Erreur commande recu non pris en compte");
     }
 
+
+    //uart debug
+    if (myObject.hasOwnProperty("uart"))
+    {
+      Serial.print("myObject[\"uart\"] = ");
+      Serial.println((int) myObject["uart"]);
+      intUartDebug = (int) myObject["uart"];
+    }
+
   }
 
 
@@ -505,7 +525,7 @@ void reconnect() {
   int compteur_mqtt = 0;
 
   //test wifi connexion
-  if (wifiMulti.run() == WL_CONNECTED) {
+  if (wifiMulti.run(connectTimeoutMs) == WL_CONNECTED) {
 
     // Loop until we're reconnected
     while (!(client.connect(clientIdMqtt.c_str(), clientLoginMqtt.c_str(), clientPassMqtt.c_str())))
@@ -547,9 +567,8 @@ void reconnect() {
 
         intcounter++;
         createJsonMessage();
-        sprintf (msg, "{\"ssid\":\"%s\",\"rssi\":%d,\"counter\":%d,\"tempcpu\":%d}", WiFi.SSID().c_str(), WiFi.RSSI(), intcounter, intTempCpu);
 
-        if (DEBUG_UART == 1)
+        if (intUartDebug == 1)
         {
           Serial.print("Publish message: ");
           Serial.print(clientIdMqtt.c_str());
@@ -588,11 +607,14 @@ void reconnect() {
       //delai reboot
       delay(random(200)); // Delay for a period of time (in milliseconds).
 
+      //mesure temperature externe
+      tempMeas(intUartDebug);
+
       intcounter++;
       createJsonMessage();
-      sprintf (msg, "{\"ssid\":\"%s\",\"rssi\":%d,\"counter\":%d,\"tempcpu\":%d}", WiFi.SSID().c_str(), WiFi.RSSI(), intcounter, intTempCpu);
+      sprintf (msg, "{\"ssid\":\"%s\",\"rssi\":%d,\"counter\":%d,\"tempcpu\":%d,\"tempgarage\":%.2f}", WiFi.SSID().c_str(), WiFi.RSSI(), intcounter, intTempCpu, temperatureExterne);
 
-      if (DEBUG_UART == 1)
+      if (intUartDebug == 1)
       {
         Serial.print("Publish message: ");
         Serial.print(clientIdMqtt.c_str());
@@ -744,6 +766,9 @@ void setup() {
   //connect MQTT
   reconnect();
 
+  //debug uart
+  intUartDebug = DEBUG_UART;
+
 }
 
 
@@ -767,14 +792,14 @@ void loop() {
   client.loop();
 
   //mesure pir
-  pirmeasure(DEBUG_UART);
+  pirmeasure(intUartDebug);
 
   //mesure temperature externe
-  tempMeas(DEBUG_UART);
+  //tempMeas(intUartDebug);
 
   //send conso
-  adcPhotodiodeMeas(DEBUG_UART);
-  sendconso(DEBUG_UART);
+  adcPhotodiodeMeas(intUartDebug);
+  sendconso(intUartDebug);
 
   //envoi status MQTT toute les 20 secondes (en vie)
   send_status_mqtt(600000);
@@ -786,7 +811,7 @@ void loop() {
   ulong_time_now = millis();
 
   //no measure if no wifi
-  if ((wifiMulti.run() == WL_CONNECTED) &&
+  if ((wifiMulti.run(connectTimeoutMs) == WL_CONNECTED) &&
       ((client.connect(clientIdMqtt.c_str(), clientLoginMqtt.c_str(), clientPassMqtt.c_str()))))
   {
     if (acq_restart == 1)
@@ -800,15 +825,18 @@ void loop() {
       M5.dis.displaybuff(DisBuff);
       delay(2000);
 
+      //mesure temperature externe
+      tempMeas(intUartDebug);
+
       //effacement ecran
       setBuff(0x00, 0x00, 0x00);
       M5.dis.displaybuff(DisBuff);
 
       intcounter++;
       createJsonMessage();
-      sprintf (msg, "{\"ssid\":\"%s\",\"rssi\":%d,\"counter\":%d,\"tempcpu\":%d}", WiFi.SSID().c_str(), WiFi.RSSI(), intcounter, intTempCpu);
+      sprintf (msg, "{\"ssid\":\"%s\",\"rssi\":%d,\"counter\":%d,\"tempcpu\":%d,\"tempgarage\":%.2f}", WiFi.SSID().c_str(), WiFi.RSSI(), intcounter, intTempCpu, temperatureExterne);
 
-      if (DEBUG_UART == 1)
+      if (intUartDebug == 1)
       {
         Serial.print("Publish message: ");
         Serial.print(clientIdMqtt.c_str());
@@ -832,7 +860,7 @@ void loop() {
   }
 
   //debug uart
-  void_fct_info_uart(DEBUG_UART);
+  void_fct_info_uart(intUartDebug);
 
   /* use RF module 433MHz or connect out of the RF command PHENIX */
   //{"code":,"channel":,"status":}
@@ -935,7 +963,7 @@ void print_wakeup_reason() {
 void status_mqtt(void)
 {
   //test wifi connexion before test MQTT
-  if (wifiMulti.run() == WL_CONNECTED)
+  if (wifiMulti.run(connectTimeoutMs) == WL_CONNECTED)
   {
     //test MQTT et reconnexion si probleme
     if (!(client.connect(clientIdMqtt.c_str(), clientLoginMqtt.c_str(), clientPassMqtt.c_str())))
@@ -968,7 +996,7 @@ void status_mqtt(void)
 void status_wifi(void)
 {
 
-  if (wifiMulti.run() != WL_CONNECTED)
+  if (wifiMulti.run(connectTimeoutMs) != WL_CONNECTED)
   {
     delay(500);
     nb_test_ctl_wifi++;
@@ -1001,6 +1029,9 @@ void send_status_mqtt(unsigned long ulong_interval)
   {
     ulong_time_send_meas_cycle = ulong_time_now;
 
+    //mesure temperature externe
+    tempMeas(intUartDebug);
+
     //Abonnement MQTT
     client.setCallback(callback_mqtt);
 
@@ -1009,8 +1040,8 @@ void send_status_mqtt(unsigned long ulong_interval)
       //envoi status MQTT
       intcounter++;
       createJsonMessage();
-      sprintf (buffer_tmp, "{\"ssid\":\"%s\",\"rssi\":%d,\"counter\":%d,\"tempcpu\":%d}", WiFi.SSID().c_str(), WiFi.RSSI(), intcounter, intTempCpu);
-      if (DEBUG_UART == 1)
+      sprintf (buffer_tmp, "{\"ssid\":\"%s\",\"rssi\":%d,\"counter\":%d,\"tempcpu\":%d,\"tempgarage\":%.2f}", WiFi.SSID().c_str(), WiFi.RSSI(), intcounter, intTempCpu, temperatureExterne);
+      if (intUartDebug == 1)
       {
         Serial.print("Publish message: ");
         Serial.print(clientIdMqtt.c_str());
@@ -1047,7 +1078,7 @@ void createJsonMessage(void)
 
   stringJsonEnvoi = JSON.stringify(JsonArrayEnvoi);
 
-  if (DEBUG_UART == 1)
+  if (intUartDebug == 1)
   {
     Serial.print("Message JSON: ");
     Serial.println(stringJsonEnvoi);
@@ -1131,6 +1162,9 @@ void sendconso(int logUart)
   {
     ulong_time_send_conso = ulong_time_now;
 
+    //init maxadc
+    intMaxAdcPhotodiode = 0;
+
     //envoi MQTT conso
     sprintf (msg, "{\"conso\":%d}", flashcountPhotodiode);
     if (logUart == 1)
@@ -1152,17 +1186,28 @@ void adcPhotodiodeMeas(int logUart)
   if (inttransition0to1 != 1)
   {
     intAdcPhotodiode = analogRead(PHOTODIODE2_PIN);
+
+    if (intAdcPhotodiode > intMaxAdcPhotodiode)
+    {
+      intMaxAdcPhotodiode = intAdcPhotodiode;
+    }
   }
 
-  intMat[indice % NB_POINTS] = intAdcPhotodiode;
-  ui32Sum -= intMat[(indice + 1) % NB_POINTS];
-  ui32Sum += intAdcPhotodiode;
-  indice++;
-
-  intmean = (int)(ui32Sum / NB_POINTS);
+  //  intMat[indice % NB_POINTS] = intAdcPhotodiode;
+  //  ui32Sum -= intMat[(indice + 1) % NB_POINTS];
+  //  ui32Sum += intAdcPhotodiode;
+  //  indice++;
+  //
+  //  intmean = (int)(ui32Sum / NB_POINTS);
 
   if (logUart == 1)
-  {
+  { //delta temps
+    ulong_time_meas_loop_delta = millis() - ulong_time_meas_loop;
+    ulong_time_meas_loop = millis();
+    //    Serial.print(ulong_time_meas_loop);
+    //    Serial.print(",");
+    Serial.print(ulong_time_meas_loop_delta);
+    Serial.print(",");
     Serial.print(flashcountPhotodiode);
     Serial.print(",");
     Serial.print(0);
@@ -1175,10 +1220,10 @@ void adcPhotodiodeMeas(int logUart)
     Serial.print(",");
     Serial.print(intmean);
     Serial.print(",");
+    Serial.print(intMaxAdcPhotodiode);
+    Serial.print(",");
+
   }
-
-  //delay(1);
-
 
   //compteur pas sur moyenne
   //intmean -> intAdcPhotodiode
